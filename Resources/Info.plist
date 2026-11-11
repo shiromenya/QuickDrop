@@ -14,6 +14,8 @@
     <string>QuickDrop</string>
     <key>CFBundleDisplayName</key>
     <string>QuickDrop</string>
+    <key>CFBundleIconFile</key>
+    <string>QuickDrop</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
