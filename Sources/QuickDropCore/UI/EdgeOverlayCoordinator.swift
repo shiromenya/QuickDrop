@@ -402,9 +402,8 @@ final class EdgeOverlayCoordinator {
         let targetOverlay = overlays[screenIndex]
         let localPoint = localPointInGlowView(dropPoint, overlay: targetOverlay)
 
-        // Start the drop ripple and ghost float-out animation immediately at the drop coordinate,
-        // then launch the AirDrop picker just as the item fades past the screen edge.
-        targetOverlay.glowWindow.glowView.spawnDropRipple(around: localPoint)
+        // Start the ghost float-out animation (and drop ripple when motion is enabled) immediately
+        // at the drop coordinate, then launch the AirDrop picker just as the item fades past the edge.
         targetOverlay.glowWindow.glowView.playFloatOutAnimation(
             image: previewImage,
             itemCount: payload.itemCount,
