@@ -139,3 +139,7 @@
 "menu.recent_shares" = "最近の共有（再送）";
 "menu.no_recent_shares" = "共有履歴はありません";
 "menu.clear_recent_shares" = "履歴をクリア";
+"pill.send_airdrop_zip" = "ZIP で AirDrop";
+"pill.share_picker_zip" = "ZIP で共有…";
+"menu.group.appearance_displays" = "外観とディスプレイ";
+"menu.group.sharing_guards" = "共有と誤爆対策";

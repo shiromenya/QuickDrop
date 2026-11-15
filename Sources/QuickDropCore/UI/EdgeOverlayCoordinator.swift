@@ -18,7 +18,7 @@ final class EdgeOverlayCoordinator {
     private var isDraggingVisible = false
     private var isPreviewVisible = false
     private var isPlayingFloatOut = false
-    private var hoveredTarget: (screenIndex: Int, edge: ScreenEdge)?
+    private var hoveredTarget: (screenIndex: Int, edge: ScreenEdge, phase: EdgeHoverPhase)?
     private var focusedScreenIndex: Int?
     private var overlayGeneration = 0
     private var previewTask: Task<Void, Never>?
@@ -75,11 +75,11 @@ final class EdgeOverlayCoordinator {
                 panel.dropView.onPrefetchRequested = { [weak self] payload in
                     self?.previewProvider.prefetch(payload: payload)
                 }
-                panel.dropView.onHoverChanged = { [weak self] hoveredEdge, isHovered, globalCursor in
-                    self?.handleHoverChanged(
+                panel.dropView.onHoverPhaseChanged = { [weak self] hoveredEdge, phase, globalCursor in
+                    self?.handleHoverPhaseChanged(
                         screenIndex: index,
                         edge: hoveredEdge,
-                        isHovered: isHovered,
+                        phase: phase,
                         globalCursor: globalCursor
                     )
                 }
@@ -169,14 +169,21 @@ final class EdgeOverlayCoordinator {
             }
         }
 
+        let shiftPressed = NSEvent.modifierFlags.contains(.shift)
         guard let hoveredTarget, overlays.indices.contains(hoveredTarget.screenIndex) else {
+            for overlay in overlays {
+                overlay.glowWindow.glowView.updateShiftPressed(shiftPressed)
+            }
             return
         }
         let overlay = overlays[hoveredTarget.screenIndex]
         let localPoint = localPointInGlowView(globalCursor, overlay: overlay)
+        let isArmed = hoveredTarget.phase == .armed
         overlay.glowWindow.glowView.updateState(
-            hoveredEdge: hoveredTarget.edge,
+            hoveredEdge: isArmed ? hoveredTarget.edge : nil,
+            warmingUpEdge: isArmed ? nil : hoveredTarget.edge,
             cursorLocalPoint: localPoint,
+            shiftPressed: shiftPressed,
             animated: false
         )
     }
@@ -306,38 +313,49 @@ final class EdgeOverlayCoordinator {
         }
     }
 
-    private func handleHoverChanged(
+    private func handleHoverPhaseChanged(
         screenIndex: Int,
         edge: ScreenEdge,
-        isHovered: Bool,
+        phase: EdgeHoverPhase,
         globalCursor: NSPoint?
     ) {
         guard isDraggingVisible, overlays.indices.contains(screenIndex) else { return }
 
         let previousTarget = hoveredTarget
-        if isHovered {
-            hoveredTarget = (screenIndex, edge)
+        if phase == .none {
+            if let current = hoveredTarget,
+               current.screenIndex == screenIndex && current.edge == edge {
+                hoveredTarget = nil
+            }
+        } else {
+            hoveredTarget = (screenIndex, edge, phase)
             if settings.hapticFeedbackEnabled,
-               previousTarget?.screenIndex != screenIndex || previousTarget?.edge != edge {
+               phase == .armed,
+               (previousTarget?.screenIndex != screenIndex ||
+                previousTarget?.edge != edge ||
+                previousTarget?.phase != .armed) {
                 NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
             }
-        } else if let current = hoveredTarget,
-                  current.screenIndex == screenIndex && current.edge == edge {
-            hoveredTarget = nil
         }
 
+        let shiftPressed = NSEvent.modifierFlags.contains(.shift)
         for (idx, overlay) in overlays.enumerated() {
             if let target = hoveredTarget, target.screenIndex == idx {
                 let localPoint = globalCursor.map { localPointInGlowView($0, overlay: overlay) }
+                let isArmed = target.phase == .armed
                 overlay.glowWindow.glowView.updateState(
-                    hoveredEdge: target.edge,
+                    hoveredEdge: isArmed ? target.edge : nil,
+                    warmingUpEdge: isArmed ? nil : target.edge,
                     cursorLocalPoint: localPoint,
+                    shiftPressed: shiftPressed,
                     animated: true
                 )
             } else {
                 overlay.glowWindow.glowView.updateState(
                     hoveredEdge: nil,
+                    warmingUpEdge: nil,
                     cursorLocalPoint: nil,
+                    shiftPressed: shiftPressed,
                     animated: true
                 )
             }
@@ -384,8 +402,9 @@ final class EdgeOverlayCoordinator {
         let targetOverlay = overlays[screenIndex]
         let localPoint = localPointInGlowView(dropPoint, overlay: targetOverlay)
 
-        // Start the ghost float-out animation immediately at the drop coordinate, then launch
-        // the AirDrop picker just as the item fades past the screen edge.
+        // Start the drop ripple and ghost float-out animation immediately at the drop coordinate,
+        // then launch the AirDrop picker just as the item fades past the screen edge.
+        targetOverlay.glowWindow.glowView.spawnDropRipple(around: localPoint)
         targetOverlay.glowWindow.glowView.playFloatOutAnimation(
             image: previewImage,
             itemCount: payload.itemCount,

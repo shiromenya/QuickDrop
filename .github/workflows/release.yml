@@ -20,6 +20,8 @@ jobs:
         run: swift test
 
       - name: Build QuickDrop.app
+        env:
+          QUICKDROP_VERSION: ${{ github.ref_name }}
         run: |
           chmod +x scripts/build-app.sh
           ./scripts/build-app.sh

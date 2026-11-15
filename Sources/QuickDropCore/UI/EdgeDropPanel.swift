@@ -42,6 +42,12 @@ final class EdgeDropPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+enum EdgeHoverPhase: Equatable {
+    case none
+    case warmingUp
+    case armed
+}
+
 @MainActor
 final class EdgeDropView: NSView {
     let edge: ScreenEdge
@@ -55,7 +61,7 @@ final class EdgeDropView: NSView {
     var allowWebAndImageDrags = false
     var hoverDelay: TimeInterval = 0
 
-    var onHoverChanged: ((ScreenEdge, Bool, NSPoint?) -> Void)?
+    var onHoverPhaseChanged: ((ScreenEdge, EdgeHoverPhase, NSPoint?) -> Void)?
     var onPrefetchRequested: ((DraggedPayload) -> Void)?
     var onFilesDropped: ((DraggedPayload, ScreenEdge, NSPoint) -> Void)?
 
@@ -97,12 +103,13 @@ final class EdgeDropView: NSView {
 
         if hoverDelay <= 0.001 {
             isHoverArmed = true
-            onHoverChanged?(edge, true, lastDragCursor)
+            onHoverPhaseChanged?(edge, .armed, lastDragCursor)
         } else {
+            onHoverPhaseChanged?(edge, .warmingUp, lastDragCursor)
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self, self.isDropEnabled, self.isDragInside else { return }
                 self.isHoverArmed = true
-                self.onHoverChanged?(self.edge, true, self.lastDragCursor ?? NSEvent.mouseLocation)
+                self.onHoverPhaseChanged?(self.edge, .armed, self.lastDragCursor ?? NSEvent.mouseLocation)
             }
             hoverArmWorkItem = workItem
             DispatchQueue.main.asyncAfter(deadline: .now() + hoverDelay, execute: workItem)
@@ -121,7 +128,9 @@ final class EdgeDropView: NSView {
         }
         lastDragCursor = NSEvent.mouseLocation
         if isHoverArmed {
-            onHoverChanged?(edge, true, lastDragCursor)
+            onHoverPhaseChanged?(edge, .armed, lastDragCursor)
+        } else if isDragInside {
+            onHoverPhaseChanged?(edge, .warmingUp, lastDragCursor)
         }
         return operation
     }
@@ -167,12 +176,12 @@ final class EdgeDropView: NSView {
     private func resetHoverState(notifyExit: Bool) {
         hoverArmWorkItem?.cancel()
         hoverArmWorkItem = nil
-        let wasArmed = isHoverArmed
+        let hadHover = isDragInside || isHoverArmed
         isDragInside = false
         isHoverArmed = false
         lastDragCursor = nil
-        if notifyExit, wasArmed {
-            onHoverChanged?(edge, false, nil)
+        if notifyExit, hadHover {
+            onHoverPhaseChanged?(edge, .none, nil)
         }
     }
 

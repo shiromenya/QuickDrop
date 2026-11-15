@@ -46,6 +46,9 @@ final class EdgeGlowView: NSView {
     private var idleAlpha: CGFloat = GlowIntensity.subtle.idleAlpha
     private var hoveredAlpha: CGFloat = GlowIntensity.subtle.hoveredAlpha
     private var hoveredEdge: ScreenEdge?
+    private var warmingUpEdge: ScreenEdge?
+    private var isShiftPressed = false
+    private var lastCursorLocalPoint: NSPoint?
     private var isPreviewHighlighted = false
     private var defaultShareBehavior: ShareBehavior = .airDropDirectly
     private var edgeShareBehaviors: [ScreenEdge: ShareBehavior] = [:]
@@ -93,10 +96,27 @@ final class EdgeGlowView: NSView {
         refreshGlowAppearance(animated: animated)
     }
 
-    func updateState(hoveredEdge: ScreenEdge?, cursorLocalPoint: NSPoint?, animated: Bool = true) {
+    func updateState(
+        hoveredEdge: ScreenEdge?,
+        warmingUpEdge: ScreenEdge? = nil,
+        cursorLocalPoint: NSPoint?,
+        shiftPressed: Bool = false,
+        animated: Bool = true
+    ) {
         self.hoveredEdge = hoveredEdge
+        self.warmingUpEdge = warmingUpEdge
+        self.lastCursorLocalPoint = cursorLocalPoint
+        self.isShiftPressed = shiftPressed
         refreshGlowAppearance(animated: animated)
         updateBadge(for: hoveredEdge, cursorLocalPoint: cursorLocalPoint)
+    }
+
+    func updateShiftPressed(_ shiftPressed: Bool) {
+        guard isShiftPressed != shiftPressed else { return }
+        isShiftPressed = shiftPressed
+        if let hoveredEdge {
+            updateBadge(for: hoveredEdge, cursorLocalPoint: lastCursorLocalPoint)
+        }
     }
 
     /// Plays a purely visual float-out animation where a ghost of the dropped item gently
@@ -116,6 +136,12 @@ final class EdgeGlowView: NSView {
         let shrinkInset = (cardSize - endSize) / 2
         let startOrigin = floatStartOrigin(for: edge, localPoint: localPoint, cardSize: cardSize)
         let delta = reduceMotion ? CGVector.zero : floatExitDelta(for: edge, distance: 108)
+
+        if !reduceMotion {
+            spawnDropRipple(
+                around: NSPoint(x: startOrigin.x + cardSize / 2, y: startOrigin.y + cardSize / 2)
+            )
+        }
 
         let ghostView = FloatOutFileView(
             image: image,
@@ -185,8 +211,11 @@ final class EdgeGlowView: NSView {
             let rim = makeGradientLayer(for: edge)
 
             if edge == .left || edge == .right {
-                aura.mask = makeBottomFadeMask()
-                rim.mask = makeBottomFadeMask()
+                aura.mask = makeVerticalEdgeMask()
+                rim.mask = makeVerticalEdgeMask()
+            } else if edge == .top {
+                aura.mask = makeHorizontalEdgeMask()
+                rim.mask = makeHorizontalEdgeMask()
             }
 
             rootLayer.addSublayer(aura)
@@ -218,18 +247,67 @@ final class EdgeGlowView: NSView {
         return gradient
     }
 
-    private func makeBottomFadeMask() -> CAGradientLayer {
+    private func makeVerticalEdgeMask() -> CAGradientLayer {
         let mask = CAGradientLayer()
-        // Smoothly fade out near the bottom corner so the bottom edge remains unlit.
+        // Smoothly fade out near the bottom corner (Dock) and softly blend at the top corner.
         mask.startPoint = CGPoint(x: 0.5, y: 0.0)
         mask.endPoint = CGPoint(x: 0.5, y: 1.0)
         mask.colors = [
             NSColor.clear.cgColor,
             NSColor.white.cgColor,
-            NSColor.white.cgColor
+            NSColor.white.cgColor,
+            NSColor.clear.cgColor
         ]
-        mask.locations = [0.0, 0.08, 1.0]
+        mask.locations = [0.0, 0.08, 0.96, 1.0]
         return mask
+    }
+
+    private func makeHorizontalEdgeMask() -> CAGradientLayer {
+        let mask = CAGradientLayer()
+        // Softly taper top corners so horizontal and vertical edges blend seamlessly.
+        mask.startPoint = CGPoint(x: 0.0, y: 0.5)
+        mask.endPoint = CGPoint(x: 1.0, y: 0.5)
+        mask.colors = [
+            NSColor.clear.cgColor,
+            NSColor.white.cgColor,
+            NSColor.white.cgColor,
+            NSColor.clear.cgColor
+        ]
+        mask.locations = [0.0, 0.03, 0.97, 1.0]
+        return mask
+    }
+
+    private func spawnDropRipple(around center: NSPoint) {
+        guard let rootLayer = layer else { return }
+
+        let ripple = CAShapeLayer()
+        ripple.bounds = CGRect(x: -1, y: -1, width: 2, height: 2)
+        ripple.position = center
+        ripple.path = CGPath(ellipseIn: CGRect(x: -1, y: -1, width: 2, height: 2), transform: nil)
+        ripple.fillColor = currentColor.withAlphaComponent(0.16).cgColor
+        ripple.strokeColor = currentColor.withAlphaComponent(0.85).cgColor
+        ripple.lineWidth = 0.05
+        ripple.opacity = 0
+        rootLayer.addSublayer(ripple)
+
+        let scaleAnim = CABasicAnimation(keyPath: "transform.scale")
+        scaleAnim.fromValue = 12.0
+        scaleAnim.toValue = 68.0
+
+        let fadeAnim = CAKeyframeAnimation(keyPath: "opacity")
+        fadeAnim.values = [0.0, 0.75, 0.0]
+        fadeAnim.keyTimes = [0.0, 0.22, 1.0]
+
+        let group = CAAnimationGroup()
+        group.animations = [scaleAnim, fadeAnim]
+        group.duration = 0.38
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        group.isRemovedOnCompletion = true
+
+        ripple.add(group, forKey: "dropRipple")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak ripple] in
+            ripple?.removeFromSuperlayer()
+        }
     }
 
     private func layoutEdgeLayers() {
@@ -276,6 +354,7 @@ final class EdgeGlowView: NSView {
         for edge in ScreenEdge.allCases {
             let isEdgeActive = activeEdges.contains(edge)
             let isHovered = isEdgeActive && (hoveredEdge == edge || isPreviewHighlighted)
+            let isWarming = isEdgeActive && (warmingUpEdge == edge) && !isHovered
 
             let baseAlpha: CGFloat
             if !isEdgeActive {
@@ -284,11 +363,13 @@ final class EdgeGlowView: NSView {
                 baseAlpha = max(idleAlpha * 1.45, hoveredAlpha * 0.82)
             } else if let hoveredEdge {
                 baseAlpha = (hoveredEdge == edge) ? hoveredAlpha : (idleAlpha * 0.55)
+            } else if isWarming {
+                baseAlpha = min(hoveredAlpha, idleAlpha + (hoveredAlpha - idleAlpha) * 0.42)
             } else {
                 baseAlpha = idleAlpha
             }
 
-            let auraDepth: CGFloat = isHovered ? 58 : 34
+            let auraDepth: CGFloat = isHovered ? 58 : (isWarming ? 44 : 34)
             if let aura = auraLayers[edge] {
                 aura.isHidden = !isEdgeActive
                 aura.frame = frameForEdge(edge, depth: auraDepth)
@@ -336,7 +417,10 @@ final class EdgeGlowView: NSView {
             return
         }
 
-        badgeView.configure(shareBehavior: edgeShareBehaviors[edge] ?? defaultShareBehavior)
+        badgeView.configure(
+            shareBehavior: edgeShareBehaviors[edge] ?? defaultShareBehavior,
+            zipOnDrop: isShiftPressed
+        )
         badgeView.setAccentColor(currentColor)
         badgeView.layoutSubtreeIfNeeded()
         let pillFrame = edge.pillFrame(
@@ -399,15 +483,21 @@ private final class EdgeBadgePillView: NSVisualEffectView {
         layer?.cornerRadius = bounds.height / 2
     }
 
-    func configure(shareBehavior: ShareBehavior) {
+    func configure(shareBehavior: ShareBehavior, zipOnDrop: Bool = false) {
         let symbolName: String
-        switch shareBehavior {
-        case .airDropDirectly:
+        switch (shareBehavior, zipOnDrop) {
+        case (.airDropDirectly, false):
             symbolName = "dot.radiowaves.left.and.right"
             label.stringValue = L10n.tr("pill.send_airdrop")
-        case .systemSharePicker:
+        case (.airDropDirectly, true):
+            symbolName = "archivebox.fill"
+            label.stringValue = L10n.tr("pill.send_airdrop_zip")
+        case (.systemSharePicker, false):
             symbolName = "square.and.arrow.up"
             label.stringValue = L10n.tr("pill.share_picker")
+        case (.systemSharePicker, true):
+            symbolName = "archivebox.fill"
+            label.stringValue = L10n.tr("pill.share_picker_zip")
         }
         let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
         iconView.image = NSImage(

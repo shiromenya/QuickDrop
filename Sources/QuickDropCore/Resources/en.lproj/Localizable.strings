@@ -139,3 +139,7 @@
 "menu.recent_shares" = "Recent Shares";
 "menu.no_recent_shares" = "No recent shares";
 "menu.clear_recent_shares" = "Clear Recent History";
+"pill.send_airdrop_zip" = "ZIP & AirDrop";
+"pill.share_picker_zip" = "ZIP & Share…";
+"menu.group.appearance_displays" = "Appearance & Displays";
+"menu.group.sharing_guards" = "Sharing & Safeguards";

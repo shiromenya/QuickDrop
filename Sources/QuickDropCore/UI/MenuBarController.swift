@@ -92,37 +92,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        menu.addItem(makeColorSubmenu())
-        menu.addItem(makeIntensitySubmenu())
-        menu.addItem(makeHitThicknessSubmenu())
-        menu.addItem(makeEdgesSubmenu())
-        menu.addItem(makeDisplaysSubmenu())
-        menu.addItem(makeModifierModeSubmenu())
-        menu.addItem(makeHoverDelaySubmenu())
-        menu.addItem(makeShareBehaviorSubmenu())
-        menu.addItem(makeEdgeActionsSubmenu())
-        menu.addItem(makeZipArchiveSubmenu())
-
-        menu.addItem(makeActionItem(
-            title: L10n.tr("menu.avoid_corners"),
-            action: #selector(toggleAvoidHotCorners),
-            state: settings.avoidHotCorners ? .on : .off
-        ))
-        menu.addItem(makeActionItem(
-            title: L10n.tr("menu.haptics"),
-            action: #selector(toggleHapticFeedback),
-            state: settings.hapticFeedbackEnabled ? .on : .off
-        ))
-        menu.addItem(makeActionItem(
-            title: L10n.tr("menu.sound_feedback"),
-            action: #selector(toggleSoundFeedback),
-            state: settings.soundFeedbackEnabled ? .on : .off
-        ))
-        menu.addItem(makeActionItem(
-            title: L10n.tr("menu.web_drags"),
-            action: #selector(toggleWebAndImageDrags),
-            state: settings.allowWebAndImageDrags ? .on : .off
-        ))
+        menu.addItem(makeAppearanceAndDisplaysSubmenu())
+        menu.addItem(makeSharingAndSafeguardsSubmenu())
 
         menu.addItem(.separator())
 
@@ -143,10 +114,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        menu.addItem(makeActionItem(
-            title: L10n.tr("menu.preview_glow"),
-            action: #selector(previewGlow)
-        ))
         menu.addItem(makeActionItem(
             title: L10n.tr("menu.settings"),
             action: #selector(openSettingsWindow),
@@ -268,6 +235,52 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             }
         }
         return makeSubmenuRoot(title: L10n.tr("menu.displays"), submenu: submenu)
+    }
+
+    private func makeAppearanceAndDisplaysSubmenu() -> NSMenuItem {
+        let submenu = NSMenu()
+        submenu.addItem(makeColorSubmenu())
+        submenu.addItem(makeIntensitySubmenu())
+        submenu.addItem(makeHitThicknessSubmenu())
+        submenu.addItem(makeEdgesSubmenu())
+        submenu.addItem(makeDisplaysSubmenu())
+        submenu.addItem(.separator())
+        submenu.addItem(makeActionItem(
+            title: L10n.tr("menu.preview_glow"),
+            action: #selector(previewGlow)
+        ))
+        return makeSubmenuRoot(title: L10n.tr("menu.group.appearance_displays"), submenu: submenu)
+    }
+
+    private func makeSharingAndSafeguardsSubmenu() -> NSMenuItem {
+        let submenu = NSMenu()
+        submenu.addItem(makeShareBehaviorSubmenu())
+        submenu.addItem(makeEdgeActionsSubmenu())
+        submenu.addItem(makeZipArchiveSubmenu())
+        submenu.addItem(.separator())
+        submenu.addItem(makeModifierModeSubmenu())
+        submenu.addItem(makeHoverDelaySubmenu())
+        submenu.addItem(makeActionItem(
+            title: L10n.tr("menu.avoid_corners"),
+            action: #selector(toggleAvoidHotCorners),
+            state: settings.avoidHotCorners ? .on : .off
+        ))
+        submenu.addItem(makeActionItem(
+            title: L10n.tr("menu.haptics"),
+            action: #selector(toggleHapticFeedback),
+            state: settings.hapticFeedbackEnabled ? .on : .off
+        ))
+        submenu.addItem(makeActionItem(
+            title: L10n.tr("menu.sound_feedback"),
+            action: #selector(toggleSoundFeedback),
+            state: settings.soundFeedbackEnabled ? .on : .off
+        ))
+        submenu.addItem(makeActionItem(
+            title: L10n.tr("menu.web_drags"),
+            action: #selector(toggleWebAndImageDrags),
+            state: settings.allowWebAndImageDrags ? .on : .off
+        ))
+        return makeSubmenuRoot(title: L10n.tr("menu.group.sharing_guards"), submenu: submenu)
     }
 
     private func makeHoverDelaySubmenu() -> NSMenuItem {
