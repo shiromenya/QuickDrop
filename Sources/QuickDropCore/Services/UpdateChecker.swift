@@ -76,10 +76,10 @@ public enum UpdateCheckerError: LocalizedError {
 /// Checks GitHub Releases for newer versions of QuickDrop without intrusive background popups.
 @MainActor
 public final class UpdateChecker: ObservableObject {
-    public static let latestReleaseEndpoint = URL(
+    nonisolated public static let latestReleaseEndpoint = URL(
         string: "https://api.github.com/repos/shiromenya/QuickDrop/releases/latest"
     )!
-    public static let releasesPageURL = URL(
+    nonisolated public static let releasesPageURL = URL(
         string: "https://github.com/shiromenya/QuickDrop/releases/latest"
     )!
 
@@ -158,7 +158,7 @@ public final class UpdateChecker: ObservableObject {
         }
     }
 
-    public static func parseLatestRelease(
+    nonisolated public static func parseLatestRelease(
         data: Data,
         currentVersionString: String
     ) throws -> UpdateCheckOutcome {

@@ -54,7 +54,7 @@ public final class RecentShareHistory: ObservableObject {
         entries.removeAll()
     }
 
-    public static func displayTitle(for payload: DraggedPayload) -> String {
+    nonisolated public static func displayTitle(for payload: DraggedPayload) -> String {
         switch payload {
         case .files(let urls):
             guard let first = urls.first else { return L10n.tr("recent.unknown_item") }

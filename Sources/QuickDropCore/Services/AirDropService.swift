@@ -3,7 +3,7 @@ import AppKit
 /// Presents either the native macOS AirDrop panel or the system sharing picker for dropped items
 /// without moving or altering existing files on disk.
 @MainActor
-final class AirDropService: NSObject, NSSharingServiceDelegate, NSSharingServicePickerDelegate {
+final class AirDropService: NSObject, NSSharingServiceDelegate, @preconcurrency NSSharingServicePickerDelegate {
     private var activeService: NSSharingService?
     private var activePicker: NSSharingServicePicker?
     private var temporaryFilesToCleanup: [URL] = []
