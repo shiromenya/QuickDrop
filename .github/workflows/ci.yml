@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Run unit tests
+        run: swift test
+
+      - name: Build .app bundle
+        run: |
+          chmod +x scripts/build-app.sh
+          ./scripts/build-app.sh
+          test -f build/QuickDrop.app/Contents/MacOS/QuickDrop
+          test -f build/QuickDrop.app/Contents/Resources/QuickDrop.icns
+          find build/QuickDrop.app/Contents/Resources -maxdepth 1 -name '*.bundle' | grep -q .

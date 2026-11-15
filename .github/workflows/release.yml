@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run unit tests
+        run: swift test
+
+      - name: Build QuickDrop.app
+        run: |
+          chmod +x scripts/build-app.sh
+          ./scripts/build-app.sh
+
+      - name: Package QuickDrop.app.zip and QuickDrop.dmg
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent build/QuickDrop.app build/QuickDrop.app.zip
+          chmod +x scripts/build-dmg.sh
+          ./scripts/build-dmg.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/QuickDrop.app.zip
+            build/QuickDrop.dmg
+          generate_release_notes: true
