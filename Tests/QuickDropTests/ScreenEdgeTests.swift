@@ -97,4 +97,17 @@ final class ScreenEdgeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(topPill.minX, 56)
         XCTAssertLessThanOrEqual(topPill.maxY, bounds.height - 46)
     }
+
+    func testScreenIndexResolutionAcrossMultipleDisplaysIncludingBoundaryEdges() {
+        let left = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let right = NSRect(x: 1440, y: 0, width: 1920, height: 1080)
+        let screens = [left, right]
+
+        XCTAssertEqual(ScreenEdge.screenIndex(for: NSPoint(x: 400, y: 500), in: screens), 0)
+        XCTAssertEqual(ScreenEdge.screenIndex(for: NSPoint(x: 2000, y: 500), in: screens), 1)
+        // Edge pixels along maxX / maxY fall outside NSRect.contains's half-open bounds.
+        XCTAssertEqual(ScreenEdge.screenIndex(for: NSPoint(x: 3360, y: 500), in: screens), 1)
+        XCTAssertEqual(ScreenEdge.screenIndex(for: NSPoint(x: 500, y: 900), in: screens), 0)
+        XCTAssertNil(ScreenEdge.screenIndex(for: NSPoint(x: 100, y: 100), in: []))
+    }
 }

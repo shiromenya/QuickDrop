@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "QuickDrop",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v13)
     ],
@@ -19,7 +20,10 @@ let package = Package(
     targets: [
         .target(
             name: "QuickDropCore",
-            path: "Sources/QuickDropCore"
+            path: "Sources/QuickDropCore",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .executableTarget(
             name: "QuickDrop",

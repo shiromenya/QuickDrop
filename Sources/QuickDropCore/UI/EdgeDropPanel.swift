@@ -45,12 +45,24 @@ final class EdgeDropPanel: NSPanel {
 @MainActor
 final class EdgeDropView: NSView {
     let edge: ScreenEdge
-    var isDropEnabled = false
+    var isDropEnabled = false {
+        didSet {
+            if !isDropEnabled {
+                resetHoverState(notifyExit: false)
+            }
+        }
+    }
     var allowWebAndImageDrags = false
+    var hoverDelay: TimeInterval = 0
 
     var onHoverChanged: ((ScreenEdge, Bool, NSPoint?) -> Void)?
     var onPrefetchRequested: ((DraggedPayload) -> Void)?
     var onFilesDropped: ((DraggedPayload, ScreenEdge, NSPoint) -> Void)?
+
+    private var isDragInside = false
+    private var isHoverArmed = false
+    private var lastDragCursor: NSPoint?
+    private var hoverArmWorkItem: DispatchWorkItem?
 
     init(edge: ScreenEdge, frame: NSRect) {
         self.edge = edge
@@ -77,8 +89,24 @@ final class EdgeDropView: NSView {
               let operation = nonDestructiveOperation(for: sender) else {
             return []
         }
+
+        resetHoverState(notifyExit: false)
+        isDragInside = true
+        lastDragCursor = NSEvent.mouseLocation
         onPrefetchRequested?(payload)
-        onHoverChanged?(edge, true, NSEvent.mouseLocation)
+
+        if hoverDelay <= 0.001 {
+            isHoverArmed = true
+            onHoverChanged?(edge, true, lastDragCursor)
+        } else {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, self.isDropEnabled, self.isDragInside else { return }
+                self.isHoverArmed = true
+                self.onHoverChanged?(self.edge, true, self.lastDragCursor ?? NSEvent.mouseLocation)
+            }
+            hoverArmWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + hoverDelay, execute: workItem)
+        }
         return operation
     }
 
@@ -91,16 +119,19 @@ final class EdgeDropView: NSView {
               let operation = nonDestructiveOperation(for: sender) else {
             return []
         }
-        onHoverChanged?(edge, true, NSEvent.mouseLocation)
+        lastDragCursor = NSEvent.mouseLocation
+        if isHoverArmed {
+            onHoverChanged?(edge, true, lastDragCursor)
+        }
         return operation
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
-        onHoverChanged?(edge, false, nil)
+        resetHoverState(notifyExit: true)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        isDropEnabled && DraggedPayload.canAccept(
+        isDropEnabled && isHoverArmed && DraggedPayload.canAccept(
             pasteboard: sender.draggingPasteboard,
             allowWebAndImageDrags: allowWebAndImageDrags
         )
@@ -108,12 +139,16 @@ final class EdgeDropView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard isDropEnabled,
+              isHoverArmed,
               let payload = DraggedPayload.extract(
                 from: sender.draggingPasteboard,
                 allowWebAndImageDrags: allowWebAndImageDrags
               ) else {
             return false
         }
+
+        hoverArmWorkItem?.cancel()
+        hoverArmWorkItem = nil
 
         let targetEdge = edge
         let dropPoint = NSEvent.mouseLocation
@@ -126,7 +161,19 @@ final class EdgeDropView: NSView {
     }
 
     override func concludeDragOperation(_ sender: NSDraggingInfo?) {
-        onHoverChanged?(edge, false, nil)
+        resetHoverState(notifyExit: true)
+    }
+
+    private func resetHoverState(notifyExit: Bool) {
+        hoverArmWorkItem?.cancel()
+        hoverArmWorkItem = nil
+        let wasArmed = isHoverArmed
+        isDragInside = false
+        isHoverArmed = false
+        lastDragCursor = nil
+        if notifyExit, wasArmed {
+            onHoverChanged?(edge, false, nil)
+        }
     }
 
     // MARK: - Helpers

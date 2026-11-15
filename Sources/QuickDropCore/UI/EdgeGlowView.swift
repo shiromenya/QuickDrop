@@ -46,6 +46,13 @@ final class EdgeGlowView: NSView {
     private var idleAlpha: CGFloat = GlowIntensity.subtle.idleAlpha
     private var hoveredAlpha: CGFloat = GlowIntensity.subtle.hoveredAlpha
     private var hoveredEdge: ScreenEdge?
+    private var isPreviewHighlighted = false
+    private var defaultShareBehavior: ShareBehavior = .airDropDirectly
+    private var edgeShareBehaviors: [ScreenEdge: ShareBehavior] = [:]
+
+    private var reduceMotionEnabled: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -64,12 +71,26 @@ final class EdgeGlowView: NSView {
         layoutEdgeLayers()
     }
 
-    func applyStyle(color: NSColor, intensity: GlowIntensity, activeEdges: Set<ScreenEdge>) {
+    func applyStyle(
+        color: NSColor,
+        intensity: GlowIntensity,
+        activeEdges: Set<ScreenEdge>,
+        shareBehavior: ShareBehavior,
+        edgeShareBehaviors: [ScreenEdge: ShareBehavior] = [:]
+    ) {
         self.currentColor = color
         self.idleAlpha = intensity.idleAlpha
         self.hoveredAlpha = intensity.hoveredAlpha
         self.activeEdges = activeEdges
+        self.defaultShareBehavior = shareBehavior
+        self.edgeShareBehaviors = edgeShareBehaviors
+        badgeView.configure(shareBehavior: shareBehavior)
         refreshGlowAppearance(animated: false)
+    }
+
+    func setPreviewHighlighted(_ preview: Bool, animated: Bool = true) {
+        self.isPreviewHighlighted = preview
+        refreshGlowAppearance(animated: animated)
     }
 
     func updateState(hoveredEdge: ScreenEdge?, cursorLocalPoint: NSPoint?, animated: Bool = true) {
@@ -89,11 +110,12 @@ final class EdgeGlowView: NSView {
     ) {
         updateState(hoveredEdge: nil, cursorLocalPoint: nil, animated: true)
 
+        let reduceMotion = reduceMotionEnabled
         let cardSize: CGFloat = 76
-        let endSize: CGFloat = cardSize * 0.72
+        let endSize: CGFloat = reduceMotion ? cardSize * 0.94 : cardSize * 0.72
         let shrinkInset = (cardSize - endSize) / 2
         let startOrigin = floatStartOrigin(for: edge, localPoint: localPoint, cardSize: cardSize)
-        let delta = floatExitDelta(for: edge, distance: 108)
+        let delta = reduceMotion ? CGVector.zero : floatExitDelta(for: edge, distance: 108)
 
         let ghostView = FloatOutFileView(
             image: image,
@@ -112,8 +134,10 @@ final class EdgeGlowView: NSView {
         )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.34
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.85, 0.36, 1.0)
+            context.duration = reduceMotion ? 0.18 : 0.34
+            context.timingFunction = reduceMotion
+                ? CAMediaTimingFunction(name: .easeOut)
+                : CAMediaTimingFunction(controlPoints: 0.22, 0.85, 0.36, 1.0)
             ghostView.animator().frame = endFrame
             ghostView.animator().alphaValue = 0.0
         } completionHandler: { [weak ghostView] in
@@ -244,17 +268,20 @@ final class EdgeGlowView: NSView {
     }
 
     private func refreshGlowAppearance(animated: Bool) {
+        let shouldAnimate = animated && !reduceMotionEnabled
         CATransaction.begin()
-        CATransaction.setAnimationDuration(animated ? 0.16 : 0.0)
+        CATransaction.setAnimationDuration(shouldAnimate ? 0.16 : 0.0)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
 
         for edge in ScreenEdge.allCases {
             let isEdgeActive = activeEdges.contains(edge)
-            let isHovered = isEdgeActive && (hoveredEdge == edge)
+            let isHovered = isEdgeActive && (hoveredEdge == edge || isPreviewHighlighted)
 
             let baseAlpha: CGFloat
             if !isEdgeActive {
                 baseAlpha = 0
+            } else if isPreviewHighlighted {
+                baseAlpha = max(idleAlpha * 1.45, hoveredAlpha * 0.82)
             } else if let hoveredEdge {
                 baseAlpha = (hoveredEdge == edge) ? hoveredAlpha : (idleAlpha * 0.55)
             } else {
@@ -309,6 +336,7 @@ final class EdgeGlowView: NSView {
             return
         }
 
+        badgeView.configure(shareBehavior: edgeShareBehaviors[edge] ?? defaultShareBehavior)
         badgeView.setAccentColor(currentColor)
         badgeView.layoutSubtreeIfNeeded()
         let pillFrame = edge.pillFrame(
@@ -329,7 +357,7 @@ final class EdgeGlowView: NSView {
 @MainActor
 private final class EdgeBadgePillView: NSVisualEffectView {
     private let iconView = NSImageView()
-    private let label = NSTextField(labelWithString: "AirDrop で送信")
+    private let label = NSTextField(labelWithString: L10n.tr("pill.send_airdrop"))
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -341,11 +369,7 @@ private final class EdgeBadgePillView: NSVisualEffectView {
         layer?.borderWidth = 1
         layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
 
-        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        iconView.image = NSImage(
-            systemSymbolName: "dot.radiowaves.left.and.right",
-            accessibilityDescription: "AirDrop"
-        )?.withSymbolConfiguration(symbolConfig)
+        configure(shareBehavior: .airDropDirectly)
         iconView.contentTintColor = .white
 
         label.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
@@ -373,6 +397,23 @@ private final class EdgeBadgePillView: NSVisualEffectView {
     override func layout() {
         super.layout()
         layer?.cornerRadius = bounds.height / 2
+    }
+
+    func configure(shareBehavior: ShareBehavior) {
+        let symbolName: String
+        switch shareBehavior {
+        case .airDropDirectly:
+            symbolName = "dot.radiowaves.left.and.right"
+            label.stringValue = L10n.tr("pill.send_airdrop")
+        case .systemSharePicker:
+            symbolName = "square.and.arrow.up"
+            label.stringValue = L10n.tr("pill.share_picker")
+        }
+        let symbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        iconView.image = NSImage(
+            systemSymbolName: symbolName,
+            accessibilityDescription: label.stringValue
+        )?.withSymbolConfiguration(symbolConfig)
     }
 
     func setAccentColor(_ color: NSColor) {

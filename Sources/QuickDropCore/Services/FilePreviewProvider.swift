@@ -50,6 +50,7 @@ final class FilePreviewProvider {
             }
             if urls.count > 1 {
                 return NSWorkspace.shared.icon(forFiles: urls.map(\.path))
+                    ?? fallbackIcon(symbolName: "doc.on.doc.fill")
             }
             if let first = urls.first {
                 return NSWorkspace.shared.icon(forFile: first.path)

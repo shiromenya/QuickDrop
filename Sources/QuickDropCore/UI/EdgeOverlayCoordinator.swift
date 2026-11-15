@@ -4,7 +4,7 @@ import AppKit
 @MainActor
 final class EdgeOverlayCoordinator {
     var onDropCommitted: (() -> Void)?
-    var onPayloadDropped: ((DraggedPayload, NSScreen?) -> Void)?
+    var onPayloadDropped: ((DraggedPayload, ShareBehavior, Bool, NSScreen?) -> Void)?
 
     private struct ScreenOverlay {
         let screen: NSScreen
@@ -16,9 +16,12 @@ final class EdgeOverlayCoordinator {
     private let previewProvider = FilePreviewProvider()
     private var overlays: [ScreenOverlay] = []
     private var isDraggingVisible = false
+    private var isPreviewVisible = false
     private var isPlayingFloatOut = false
     private var hoveredTarget: (screenIndex: Int, edge: ScreenEdge)?
+    private var focusedScreenIndex: Int?
     private var overlayGeneration = 0
+    private var previewTask: Task<Void, Never>?
 
     init(settings: QuickDropSettings) {
         self.settings = settings
@@ -27,12 +30,22 @@ final class EdgeOverlayCoordinator {
 
     func rebuildOverlays() {
         let wasVisible = isDraggingVisible
+        previewTask?.cancel()
+        previewTask = nil
+        isPreviewVisible = false
         tearDownOverlays()
 
-        let allFrames = NSScreen.screens.map(\.frame)
+        let allScreens = NSScreen.screens
+        let allFrames = allScreens.map(\.frame)
+        let enabledScreens = allScreens.filter { settings.isDisplayEnabled($0.quickDropDisplayID) }
         let hitThickness = settings.hitThicknessPreset.points
+        let hoverDelay = settings.hoverDelayPreset.seconds
 
-        overlays = NSScreen.screens.enumerated().map { index, screen in
+        let edgeBehaviors = Dictionary(
+            uniqueKeysWithValues: ScreenEdge.allCases.map { ($0, settings.resolvedShareBehavior(for: $0)) }
+        )
+
+        overlays = enabledScreens.enumerated().map { index, screen in
             let activeEdges = ScreenEdge.activeEdges(
                 for: screen.frame,
                 allScreenFrames: allFrames,
@@ -42,9 +55,11 @@ final class EdgeOverlayCoordinator {
 
             let glowWindow = AmbientGlowWindow(screenFrame: screen.frame)
             glowWindow.glowView.applyStyle(
-                color: settings.colorPreset.primaryColor,
+                color: settings.activeGlowColor,
                 intensity: settings.intensity,
-                activeEdges: activeEdges
+                activeEdges: activeEdges,
+                shareBehavior: settings.shareBehavior,
+                edgeShareBehaviors: edgeBehaviors
             )
 
             var panels: [ScreenEdge: EdgeDropPanel] = [:]
@@ -56,6 +71,7 @@ final class EdgeOverlayCoordinator {
                 )
                 let panel = EdgeDropPanel(edge: edge, frame: rect)
                 panel.dropView.allowWebAndImageDrags = settings.allowWebAndImageDrags
+                panel.dropView.hoverDelay = hoverDelay
                 panel.dropView.onPrefetchRequested = { [weak self] payload in
                     self?.previewProvider.prefetch(payload: payload)
                 }
@@ -98,9 +114,62 @@ final class EdgeOverlayCoordinator {
         }
     }
 
+    func showPreviewGlow(duration: TimeInterval = 2.2) {
+        guard !isDraggingVisible, !isPlayingFloatOut else { return }
+
+        guard !overlays.isEmpty, !settings.enabledEdges.isEmpty else {
+            ToastHUDPresenter.shared.show(
+                message: L10n.tr("toast.no_active_edges"),
+                style: .info,
+                on: NSScreen.main
+            )
+            return
+        }
+
+        previewTask?.cancel()
+        overlayGeneration += 1
+        let activeGeneration = overlayGeneration
+        isPreviewVisible = true
+
+        let fadeDuration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.08 : 0.18
+        for overlay in overlays {
+            disableDropPanels(in: overlay)
+            overlay.glowWindow.glowView.updateState(
+                hoveredEdge: nil,
+                cursorLocalPoint: nil,
+                animated: false
+            )
+            overlay.glowWindow.glowView.setPreviewHighlighted(true, animated: true)
+            overlay.glowWindow.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = fadeDuration
+                overlay.glowWindow.animator().alphaValue = 1
+            }
+        }
+
+        previewTask = Task { [weak self] in
+            let nanos = UInt64(max(0.4, duration) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled else { return }
+            self?.dismissPreviewGlowIfNeeded(expectedGeneration: activeGeneration)
+        }
+    }
+
     func updateCursorPosition(_ globalCursor: NSPoint) {
-        guard isDraggingVisible, let hoveredTarget,
-              overlays.indices.contains(hoveredTarget.screenIndex) else {
+        guard isDraggingVisible else { return }
+
+        if settings.displayGlowScope == .cursorDisplayOnly, hoveredTarget == nil {
+            let nextIndex = ScreenEdge.screenIndex(
+                for: globalCursor,
+                in: overlays.map(\.screen.frame)
+            )
+            if nextIndex != focusedScreenIndex {
+                focusedScreenIndex = nextIndex
+                syncFocusedScreenVisibility()
+            }
+        }
+
+        guard let hoveredTarget, overlays.indices.contains(hoveredTarget.screenIndex) else {
             return
         }
         let overlay = overlays[hoveredTarget.screenIndex]
@@ -115,40 +184,94 @@ final class EdgeOverlayCoordinator {
     // MARK: - Private
 
     private func showOverlays() {
+        previewTask?.cancel()
+        previewTask = nil
+        isPreviewVisible = false
         overlayGeneration += 1
         isDraggingVisible = true
         isPlayingFloatOut = false
         hoveredTarget = nil
+        focusedScreenIndex = settings.displayGlowScope == .cursorDisplayOnly
+            ? ScreenEdge.screenIndex(for: NSEvent.mouseLocation, in: overlays.map(\.screen.frame))
+            : nil
 
-        for overlay in overlays {
+        for (idx, overlay) in overlays.enumerated() {
+            overlay.glowWindow.glowView.setPreviewHighlighted(false, animated: false)
             overlay.glowWindow.glowView.updateState(
                 hoveredEdge: nil,
                 cursorLocalPoint: nil,
                 animated: false
             )
-            overlay.glowWindow.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.16
-                overlay.glowWindow.animator().alphaValue = 1
-            }
-
-            for panel in overlay.dropPanels.values {
-                panel.dropView.isDropEnabled = true
-                panel.ignoresMouseEvents = false
-                panel.orderFrontRegardless()
-            }
+            let isVisibleOnDisplay = shouldOverlayDisplay(at: idx)
+            setOverlay(overlay, activeForDrag: isVisibleOnDisplay, generation: overlayGeneration)
         }
     }
 
     private func hideOverlays() {
+        previewTask?.cancel()
+        previewTask = nil
+        isPreviewVisible = false
+        focusedScreenIndex = nil
         overlayGeneration += 1
         isDraggingVisible = false
         hoveredTarget = nil
         previewProvider.clear()
 
         for overlay in overlays {
+            overlay.glowWindow.glowView.setPreviewHighlighted(false, animated: false)
             disableDropPanels(in: overlay)
             fadeOutGlowWindow(overlay.glowWindow, generation: overlayGeneration)
+        }
+    }
+
+    private func dismissPreviewGlowIfNeeded(expectedGeneration: Int) {
+        guard isPreviewVisible,
+              !isDraggingVisible,
+              !isPlayingFloatOut,
+              overlayGeneration == expectedGeneration else {
+            return
+        }
+        isPreviewVisible = false
+        overlayGeneration += 1
+        let fadeGeneration = overlayGeneration
+        for overlay in overlays {
+            overlay.glowWindow.glowView.setPreviewHighlighted(false, animated: true)
+            fadeOutGlowWindow(overlay.glowWindow, generation: fadeGeneration)
+        }
+    }
+
+    private func shouldOverlayDisplay(at index: Int) -> Bool {
+        switch settings.displayGlowScope {
+        case .allDisplays:
+            return true
+        case .cursorDisplayOnly:
+            return focusedScreenIndex == nil || focusedScreenIndex == index
+        }
+    }
+
+    private func syncFocusedScreenVisibility() {
+        for (idx, overlay) in overlays.enumerated() {
+            let isVisibleOnDisplay = shouldOverlayDisplay(at: idx)
+            setOverlay(overlay, activeForDrag: isVisibleOnDisplay, generation: overlayGeneration)
+        }
+    }
+
+    private func setOverlay(_ overlay: ScreenOverlay, activeForDrag: Bool, generation: Int) {
+        let fadeDuration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.08 : 0.16
+        if activeForDrag {
+            overlay.glowWindow.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = fadeDuration
+                overlay.glowWindow.animator().alphaValue = 1
+            }
+            for panel in overlay.dropPanels.values {
+                panel.dropView.isDropEnabled = true
+                panel.ignoresMouseEvents = false
+                panel.orderFrontRegardless()
+            }
+        } else {
+            disableDropPanels(in: overlay)
+            fadeOutGlowWindow(overlay.glowWindow, generation: generation)
         }
     }
 
@@ -166,13 +289,15 @@ final class EdgeOverlayCoordinator {
             cursorLocalPoint: nil,
             animated: true
         )
+        let fadeDuration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.08 : 0.15
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
+            context.duration = fadeDuration
             glowWindow.animator().alphaValue = 0
         } completionHandler: { [weak self, weak glowWindow] in
             Task { @MainActor [weak self, weak glowWindow] in
                 guard let self,
                       !self.isDraggingVisible,
+                      !self.isPreviewVisible,
                       self.overlayGeneration == generation else {
                     return
                 }
@@ -228,8 +353,13 @@ final class EdgeOverlayCoordinator {
         overlayGeneration += 1
         let activeGeneration = overlayGeneration
         isDraggingVisible = false
+        isPreviewVisible = false
         isPlayingFloatOut = true
         hoveredTarget = nil
+        focusedScreenIndex = nil
+        if settings.soundFeedbackEnabled {
+            NSSound(named: NSSound.Name("Pop"))?.play()
+        }
         onDropCommitted?()
 
         let previewImage = previewProvider.previewImage(for: payload)
@@ -242,9 +372,12 @@ final class EdgeOverlayCoordinator {
             }
         }
 
+        let resolvedBehavior = settings.resolvedShareBehavior(for: edge)
+        let shiftPressed = NSEvent.modifierFlags.contains(.shift)
+
         guard overlays.indices.contains(screenIndex) else {
             isPlayingFloatOut = false
-            onPayloadDropped?(payload, nil)
+            onPayloadDropped?(payload, resolvedBehavior, shiftPressed, nil)
             return
         }
 
@@ -271,7 +404,7 @@ final class EdgeOverlayCoordinator {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self, weak screen = targetOverlay.screen] in
             guard let self, self.overlayGeneration == activeGeneration else { return }
-            self.onPayloadDropped?(payload, screen)
+            self.onPayloadDropped?(payload, resolvedBehavior, shiftPressed, screen)
         }
     }
 

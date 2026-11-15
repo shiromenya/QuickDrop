@@ -9,9 +9,9 @@ public enum ScreenEdge: String, CaseIterable, Hashable, Codable {
 
     public var displayName: String {
         switch self {
-        case .left: return "左辺"
-        case .top: return "上辺"
-        case .right: return "右辺"
+        case .left: return L10n.tr("edge.left")
+        case .top: return L10n.tr("edge.top")
+        case .right: return L10n.tr("edge.right")
         }
     }
 
@@ -129,5 +129,47 @@ public enum ScreenEdge: String, CaseIterable, Hashable, Codable {
 
     private static func overlapSpan(minA: CGFloat, maxA: CGFloat, minB: CGFloat, maxB: CGFloat) -> CGFloat {
         max(0, min(maxA, maxB) - max(minA, minB))
+    }
+
+    /// Returns the index in `screenFrames` containing `globalPoint`, falling back to the
+    /// nearest display boundary so points clamped along `maxX` / `maxY` edges resolve reliably.
+    public static func screenIndex(for globalPoint: NSPoint, in screenFrames: [NSRect]) -> Int? {
+        if let exactIndex = screenFrames.firstIndex(where: { $0.contains(globalPoint) }) {
+            return exactIndex
+        }
+        return screenFrames.enumerated().min { lhs, rhs in
+            squaredDistance(from: globalPoint, to: lhs.element)
+                < squaredDistance(from: globalPoint, to: rhs.element)
+        }?.offset
+    }
+
+    private static func squaredDistance(from point: NSPoint, to rect: NSRect) -> CGFloat {
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        return dx * dx + dy * dy
+    }
+}
+
+extension NSScreen {
+    /// Persistent `CGDirectDisplayID` backing this screen when available.
+    public var quickDropDisplayID: UInt32? {
+        (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+    }
+}
+
+public struct ConnectedDisplayInfo: Identifiable, Sendable {
+    public let id: UInt32
+    public let name: String
+    public let resolutionText: String
+
+    @MainActor
+    public static func current() -> [ConnectedDisplayInfo] {
+        NSScreen.screens.enumerated().compactMap { index, screen in
+            guard let id = screen.quickDropDisplayID else { return nil }
+            let fallbackName = L10n.fmt("display.fallback_name", index + 1)
+            let name = screen.localizedName.isEmpty ? fallbackName : screen.localizedName
+            let resolution = "\(Int(screen.frame.width))×\(Int(screen.frame.height))"
+            return ConnectedDisplayInfo(id: id, name: name, resolutionText: resolution)
+        }
     }
 }

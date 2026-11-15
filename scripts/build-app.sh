@@ -12,7 +12,8 @@ ICON_PATH="$RESOURCES_DIR/QuickDrop.icns"
 echo "Building QuickDrop (Release)..."
 swift build -c release --package-path "$ROOT_DIR"
 
-BIN_PATH="$(swift build -c release --show-bin-path --package-path "$ROOT_DIR")/QuickDrop"
+BIN_DIR="$(swift build -c release --show-bin-path --package-path "$ROOT_DIR")"
+BIN_PATH="$BIN_DIR/QuickDrop"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
@@ -20,6 +21,9 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN_PATH" "$MACOS_DIR/QuickDrop"
 cp "$ROOT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
 chmod +x "$MACOS_DIR/QuickDrop"
+
+# Copy SwiftPM resource bundles (localized strings, etc.) into Contents/Resources.
+find "$BIN_DIR" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES_DIR/" \;
 
 if command -v iconutil >/dev/null 2>&1; then
     echo "Generating QuickDrop.icns..."

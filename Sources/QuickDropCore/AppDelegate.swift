@@ -15,7 +15,22 @@ public enum QuickDropRunner {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = QuickDropSettings()
+    private let recentHistory = RecentShareHistory()
     private lazy var dragMonitor = GlobalDragMonitor(settings: settings)
+    private lazy var updateChecker = UpdateChecker(settings: settings)
+    private lazy var onboardingController = OnboardingWindowController(settings: settings) { [weak self] in
+        self?.overlayCoordinator?.showPreviewGlow()
+    }
+    private lazy var settingsWindowController = SettingsWindowController(
+        settings: settings,
+        updateChecker: updateChecker,
+        onPreviewGlow: { [weak self] in
+            self?.overlayCoordinator?.showPreviewGlow()
+        },
+        onShowOnboarding: { [weak self] in
+            self?.onboardingController.showWindow()
+        }
+    )
     private let airDropService = AirDropService()
 
     private var overlayCoordinator: EdgeOverlayCoordinator?
@@ -28,11 +43,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let coordinator = EdgeOverlayCoordinator(settings: settings)
         self.overlayCoordinator = coordinator
-        self.menuBarController = MenuBarController(settings: settings)
+        self.menuBarController = MenuBarController(
+            settings: settings,
+            recentHistory: recentHistory,
+            onResendRecent: { [weak self] entry in
+                guard let self else { return }
+                self.airDropService.share(
+                    payload: entry.payload,
+                    behavior: entry.behavior,
+                    zipBehavior: self.settings.zipArchiveBehavior,
+                    shiftPressed: false,
+                    on: NSScreen.main,
+                    recentHistory: self.recentHistory
+                )
+            },
+            onOpenSettings: { [weak self] in
+                self?.settingsWindowController.showWindow()
+            },
+            onPreviewGlow: { [weak self] in
+                self?.overlayCoordinator?.showPreviewGlow()
+            },
+            onCheckForUpdates: { [weak self] in
+                self?.updateChecker.checkForUpdates(userInitiated: true)
+            },
+            onShowOnboarding: { [weak self] in
+                self?.onboardingController.showWindow()
+            }
+        )
 
         wireCallbacks(coordinator: coordinator)
         observeScreenChanges()
         syncMonitoringState()
+
+        if !settings.hasCompletedOnboarding {
+            onboardingController.showWindow()
+        }
+        updateChecker.automaticCheckIfDue()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -55,19 +101,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.dragMonitor.notifyDragEnded()
         }
 
-        coordinator.onPayloadDropped = { [weak self] payload, screen in
-            self?.airDropService.share(payload: payload, on: screen)
+        coordinator.onPayloadDropped = { [weak self] payload, resolvedBehavior, shiftPressed, screen in
+            guard let self else { return }
+            self.airDropService.share(
+                payload: payload,
+                behavior: resolvedBehavior,
+                zipBehavior: self.settings.zipArchiveBehavior,
+                shiftPressed: shiftPressed,
+                on: screen,
+                recentHistory: self.recentHistory
+            )
         }
 
         settings.onChange = { [weak self] in
             self?.syncMonitoringState()
+            self?.menuBarController?.refreshStatusAppearance()
             self?.overlayCoordinator?.applySettings()
             self?.dragMonitor.refreshActiveEvaluationIfNeeded()
         }
     }
 
     private func syncMonitoringState() {
-        if settings.isEnabled {
+        if settings.isEffectivelyEnabled {
             dragMonitor.start()
         } else {
             dragMonitor.stop()
@@ -82,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.settings.notifyDisplayConfigurationChanged()
                 self?.overlayCoordinator?.rebuildOverlays()
             }
         }

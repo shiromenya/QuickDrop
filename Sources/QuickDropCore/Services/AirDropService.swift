@@ -1,35 +1,154 @@
 import AppKit
 
-/// Presents the native macOS AirDrop sharing panel for dropped files, web URLs, or images
-/// without moving or altering any existing files on disk.
+/// Presents either the native macOS AirDrop panel or the system sharing picker for dropped items
+/// without moving or altering existing files on disk.
 @MainActor
-final class AirDropService: NSObject, NSSharingServiceDelegate {
+final class AirDropService: NSObject, NSSharingServiceDelegate, NSSharingServicePickerDelegate {
     private var activeService: NSSharingService?
+    private var activePicker: NSSharingServicePicker?
     private var temporaryFilesToCleanup: [URL] = []
+    private weak var lastTargetScreen: NSScreen?
     private lazy var anchorWindow: NSWindow = makeAnchorWindow()
 
-    func share(payload: DraggedPayload, on screen: NSScreen?) {
-        let prepared = prepareShareItems(from: payload)
-        guard !prepared.items.isEmpty else { return }
+    func share(
+        payload: DraggedPayload,
+        behavior: ShareBehavior,
+        zipBehavior: ZipArchiveBehavior = .off,
+        shiftPressed: Bool = false,
+        on screen: NSScreen?,
+        recentHistory: RecentShareHistory? = nil
+    ) {
+        let targetScreen = screen ?? NSScreen.main ?? NSScreen.screens.first
+        lastTargetScreen = targetScreen
 
-        guard let service = NSSharingService(named: .sendViaAirDrop),
-              service.canPerform(withItems: prepared.items) else {
-            cleanupTemporaryFiles(prepared.temporaryURLs)
-            presentUnavailableAlert()
+        if case .files(let rawURLs) = payload {
+            let localFiles = deduplicatedLocalFiles(from: rawURLs)
+            guard !localFiles.isEmpty else {
+                ToastHUDPresenter.shared.show(message: L10n.tr("toast.files_missing"), on: targetScreen)
+                return
+            }
+
+            if ZipArchiver.shouldArchive(
+                urls: localFiles,
+                behavior: zipBehavior,
+                shiftPressed: shiftPressed
+            ) {
+                ToastHUDPresenter.shared.show(
+                    message: L10n.tr("toast.zipping"),
+                    style: .info,
+                    on: targetScreen
+                )
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        let archived = try await ZipArchiver.archive(urls: localFiles)
+                        recentHistory?.record(payload: .files(localFiles), behavior: behavior)
+                        self.dispatchShare(
+                            items: [archived.zipURL],
+                            tempURLs: archived.temporaryCleanupURLs,
+                            behavior: behavior,
+                            on: targetScreen
+                        )
+                    } catch {
+                        ToastHUDPresenter.shared.show(
+                            message: L10n.fmt("toast.share_failed", error.localizedDescription),
+                            on: targetScreen
+                        )
+                    }
+                }
+                return
+            }
+
+            recentHistory?.record(payload: .files(localFiles), behavior: behavior)
+            dispatchShare(items: localFiles, tempURLs: [], behavior: behavior, on: targetScreen)
             return
         }
 
-        // Clean up any leftover temp files from an earlier session before starting a new one.
-        cleanupTemporaryFiles(temporaryFilesToCleanup)
-        temporaryFilesToCleanup = prepared.temporaryURLs
+        let prepared = prepareShareItems(from: payload)
+        guard !prepared.items.isEmpty else { return }
+        recentHistory?.record(payload: payload, behavior: behavior)
+        dispatchShare(
+            items: prepared.items,
+            tempURLs: prepared.temporaryURLs,
+            behavior: behavior,
+            on: targetScreen
+        )
+    }
 
-        positionAnchorWindow(on: screen ?? NSScreen.main ?? NSScreen.screens.first)
-        anchorWindow.orderFrontRegardless()
-        NSApp.activateQuickDrop()
+    private func dispatchShare(
+        items: [Any],
+        tempURLs: [URL],
+        behavior: ShareBehavior,
+        on targetScreen: NSScreen?
+    ) {
+        switch behavior {
+        case .airDropDirectly:
+            shareViaAirDrop(items: items, tempURLs: tempURLs, on: targetScreen)
+        case .systemSharePicker:
+            shareViaSystemPicker(items: items, tempURLs: tempURLs, on: targetScreen)
+        }
+    }
 
+    // MARK: - Share Flows
+
+    private func shareViaAirDrop(items: [Any], tempURLs: [URL], on screen: NSScreen?) {
+        guard let service = NSSharingService(named: .sendViaAirDrop),
+              service.canPerform(withItems: items) else {
+            cleanupTemporaryFiles(tempURLs)
+            ToastHUDPresenter.shared.show(message: L10n.tr("toast.airdrop_unavailable"), on: screen)
+            return
+        }
+
+        beginAnchorSession(tempURLs: tempURLs, on: screen)
         activeService = service
         service.delegate = self
-        service.perform(withItems: prepared.items)
+        service.perform(withItems: items)
+    }
+
+    private func shareViaSystemPicker(items: [Any], tempURLs: [URL], on screen: NSScreen?) {
+        beginAnchorSession(tempURLs: tempURLs, on: screen)
+        guard let contentView = anchorWindow.contentView else {
+            cleanupSession()
+            return
+        }
+
+        let picker = NSSharingServicePicker(items: items)
+        picker.delegate = self
+        activePicker = picker
+
+        let anchorRect = NSRect(
+            x: contentView.bounds.midX - 1,
+            y: contentView.bounds.midY - 1,
+            width: 2,
+            height: 2
+        )
+        picker.show(relativeTo: anchorRect, of: contentView, preferredEdge: .minY)
+    }
+
+    private func beginAnchorSession(tempURLs: [URL], on screen: NSScreen?) {
+        cleanupTemporaryFiles(temporaryFilesToCleanup)
+        temporaryFilesToCleanup = tempURLs
+
+        positionAnchorWindow(on: screen)
+        anchorWindow.orderFrontRegardless()
+        NSApp.activateQuickDrop()
+    }
+
+    // MARK: - NSSharingServicePickerDelegate
+
+    func sharingServicePicker(
+        _ sharingServicePicker: NSSharingServicePicker,
+        didChoose service: NSSharingService?
+    ) {
+        sharingServicePicker.delegate = nil
+        activePicker = nil
+
+        guard let service else {
+            cleanupSession()
+            return
+        }
+        activeService = service
+        service.delegate = self
     }
 
     // MARK: - NSSharingServiceDelegate
@@ -58,7 +177,8 @@ final class AirDropService: NSObject, NSSharingServiceDelegate {
         let isUserCancelled =
             nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError
         if !isUserCancelled {
-            presentShareErrorAlert(error)
+            let message = L10n.fmt("toast.share_failed", error.localizedDescription)
+            ToastHUDPresenter.shared.show(message: message, on: lastTargetScreen)
         }
     }
 
@@ -107,6 +227,7 @@ final class AirDropService: NSObject, NSSharingServiceDelegate {
     private func cleanupSession() {
         anchorWindow.orderOut(nil)
         activeService = nil
+        activePicker = nil
         cleanupTemporaryFiles(temporaryFilesToCleanup)
         temporaryFilesToCleanup.removeAll()
     }
@@ -131,6 +252,7 @@ final class AirDropService: NSObject, NSSharingServiceDelegate {
         window.ignoresMouseEvents = true
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 340))
         return window
     }
 
@@ -155,23 +277,5 @@ final class AirDropService: NSObject, NSSharingServiceDelegate {
             }
         }
         return result
-    }
-
-    private func presentUnavailableAlert() {
-        NSApp.activateQuickDrop()
-        let alert = NSAlert()
-        alert.messageText = "AirDrop を起動できませんでした"
-        alert.informativeText = "Wi-Fi と Bluetooth がオンになっているか、または AirDrop で共有可能なアイテムか確認してください。"
-        alert.alertStyle = .informational
-        alert.runModal()
-    }
-
-    private func presentShareErrorAlert(_ error: Error) {
-        NSApp.activateQuickDrop()
-        let alert = NSAlert()
-        alert.messageText = "AirDrop の共有に失敗しました"
-        alert.informativeText = error.localizedDescription
-        alert.alertStyle = .warning
-        alert.runModal()
     }
 }
